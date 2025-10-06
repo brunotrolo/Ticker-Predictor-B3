@@ -5,8 +5,6 @@ import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
 import streamlit as st
-from ta.momentum import RSIIndicator
-from ta.trend import SMAIndicator, EMAIndicator
 
 from b3_utils import load_b3_tickers, ensure_sa_suffix, is_known_b3_ticker, search_b3
 
@@ -19,19 +17,37 @@ def fetch_history(ticker: str, start: date, end: date) -> pd.DataFrame:
     if df.empty:
         return df
     df = df.rename_axis("Date").reset_index()
+    # Ensure proper dtypes
+    for col in ["Open","High","Low","Close","Volume"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=["Close"]).reset_index(drop=True)
     return df
+
+def sma(series: pd.Series, window: int) -> pd.Series:
+    return series.rolling(window=window, min_periods=window).mean()
+
+def ema(series: pd.Series, span: int) -> pd.Series:
+    return series.ewm(span=span, adjust=False, min_periods=span).mean()
+
+def rsi(series: pd.Series, window: int = 14) -> pd.Series:
+    delta = series.diff()
+    gain = (delta.clip(lower=0)).rolling(window=window, min_periods=window).mean()
+    loss = (-delta.clip(upper=0)).rolling(window=window, min_periods=window).mean()
+    rs = gain / loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     out = df.copy()
-    # Moving averages
-    out["SMA20"] = SMAIndicator(out["Close"], window=20).sma_indicator()
-    out["SMA50"] = SMAIndicator(out["Close"], window=50).sma_indicator()
-    out["SMA200"] = SMAIndicator(out["Close"], window=200).sma_indicator()
-    out["EMA20"] = EMAIndicator(out["Close"], window=20).ema_indicator()
-    # RSI
-    out["RSI14"] = RSIIndicator(out["Close"], window=14).rsi()
+    close = out["Close"].astype(float)
+    out["SMA20"] = sma(close, 20)
+    out["SMA50"] = sma(close, 50)
+    out["SMA200"] = sma(close, 200)
+    out["EMA20"] = ema(close, 20)
+    out["RSI14"] = rsi(close, 14)
     return out
 
 def price_chart(df: pd.DataFrame, title: str):
@@ -87,13 +103,13 @@ dfi = add_indicators(df)
 # Top metrics
 c1, c2, c3, c4 = st.columns(4)
 last_close = float(dfi['Close'].iloc[-1])
-pct_20 = (last_close / float(dfi['SMA20'].iloc[-1]) - 1) * 100 if not np.isnan(dfi['SMA20'].iloc[-1]) else np.nan
-pct_50 = (last_close / float(dfi['SMA50'].iloc[-1]) - 1) * 100 if not np.isnan(dfi['SMA50'].iloc[-1]) else np.nan
-rsi = float(dfi['RSI14'].iloc[-1])
+pct_20 = (last_close / float(dfi['SMA20'].iloc[-1]) - 1) * 100 if pd.notna(dfi['SMA20'].iloc[-1]) else np.nan
+pct_50 = (last_close / float(dfi['SMA50'].iloc[-1]) - 1) * 100 if pd.notna(dfi['SMA50'].iloc[-1]) else np.nan
+rsi_last = float(dfi['RSI14'].iloc[-1]) if pd.notna(dfi['RSI14'].iloc[-1]) else np.nan
 c1.metric("Ticker", ticker)
 c2.metric("Fechamento", f"R$ {last_close:,.2f}".replace(",", "X").replace(".", ",").replace("X","."))
-c3.metric("Δ vs SMA20", f"{pct_20:+.2f}%")
-c4.metric("RSI(14)", f"{rsi:.1f}")
+c3.metric("Δ vs SMA20", f"{pct_20:+.2f}%" if pd.notna(pct_20) else "—")
+c4.metric("RSI(14)", f"{rsi_last:.1f}" if pd.notna(rsi_last) else "—")
 
 # Charts
 price_chart(dfi, f"{ticker} • Preço e Médias Móveis")

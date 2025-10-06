@@ -3,4 +3,3 @@ yfinance>=0.2.43
 pandas>=2.0
 numpy>=1.26
 plotly>=5.24
-ta>=0.11.0
