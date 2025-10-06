@@ -10,17 +10,55 @@ from b3_utils import load_b3_tickers, ensure_sa_suffix, is_known_b3_ticker, sear
 
 st.set_page_config(page_title="B3 Ticker App", page_icon="📈", layout="wide")
 
+def _collapse_duplicate_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """If yfinance returns duplicate column names (e.g., two 'Close'), keep the first non-null value."""
+    out = df.copy()
+    # If MultiIndex columns, try to flatten by taking last level
+    if isinstance(out.columns, pd.MultiIndex):
+        # Common case: level 0 = attribute, level 1 = ticker OR vice-versa.
+        # We'll try using the level that contains OHLCV names.
+        levels = [list(l) for l in out.columns.levels]
+        lvl0 = set(out.columns.get_level_values(0))
+        lvl1 = set(out.columns.get_level_values(1))
+        if {'Open','High','Low','Close','Volume'}.issubset(lvl0):
+            out.columns = out.columns.get_level_values(0)
+        elif {'Open','High','Low','Close','Volume'}.issubset(lvl1):
+            out.columns = out.columns.get_level_values(1)
+        else:
+            # Fallback: flatten using join
+            out.columns = ['_'.join([str(x) for x in tup if x!='']).strip('_') for tup in out.columns.to_list()]
+    # Handle duplicated names (e.g., two 'Close')
+    if out.columns.duplicated().any():
+        # Group duplicated columns and take first non-null per row
+        new_cols = {}
+        for col in out.columns.unique():
+            same = out.loc[:, out.columns == col]
+            if isinstance(same, pd.DataFrame) and same.shape[1] > 1:
+                # first non-null across duplicates
+                s = same.apply(pd.to_numeric, errors='coerce').bfill(axis=1).iloc[:, 0]
+                new_cols[col] = s
+            else:
+                new_cols[col] = out[col]
+        out = pd.DataFrame(new_cols, index=out.index)
+    return out
+
 @st.cache_data(show_spinner=False, ttl=3600)
 def fetch_history(ticker: str, start: date, end: date) -> pd.DataFrame:
     t = ensure_sa_suffix(ticker)
     df = yf.download(t, start=start, end=end, progress=False, auto_adjust=True)
-    if df.empty:
-        return df
+    if df is None or len(df) == 0:
+        return pd.DataFrame()
+    df = _collapse_duplicate_cols(df)
     df = df.rename_axis("Date").reset_index()
-    # Ensure proper dtypes
+    # Ensure proper dtypes (guard against accidental 2-D selections)
     for col in ["Open","High","Low","Close","Volume"]:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+            val = df[col]
+            if isinstance(val, pd.DataFrame):
+                s = val.apply(pd.to_numeric, errors="coerce").bfill(axis=1).iloc[:,0]
+                df[col] = s
+            else:
+                df[col] = pd.to_numeric(val, errors="coerce")
     df = df.dropna(subset=["Close"]).reset_index(drop=True)
     return df
 
